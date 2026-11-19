@@ -14,7 +14,7 @@ It's built for large accounts:
 
 ## Install
 
-Requires Python 3.9+.
+Requires Python 3.10+.
 
 ```bash
 git clone https://github.com/Galinsky-Labs/Dropbox-To-Drive-Migrator.git
