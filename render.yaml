@@ -1,0 +1,22 @@
+# Render Blueprint: runs the migration as a background worker. Progress is kept in Postgres
+# (DATABASE_URL), because a Render instance's disk is wiped on every deploy/restart.
+# NOTE: Render bills outbound bandwidth (everything uploaded to Google Drive) beyond the
+# workspace's included allowance; for large accounts a Google Cloud VM is far cheaper (see README).
+services:
+  - type: worker
+    name: dropbox-to-drive-migrator
+    runtime: python
+    plan: starter
+    buildCommand: pip install '.[postgres]'
+    startCommand: dbx2gdrive migrate --service
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATABASE_URL          # postgres:// URL, e.g. from Neon or Render Postgres
+        sync: false
+      - key: DROPBOX_APP_KEY       # from `dbx2gdrive auth export`
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_TOKEN_JSON
+        sync: false

@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -25,6 +26,14 @@ def _setup_logging(verbose: bool, log_file: str = None) -> None:
 def cmd_auth(args) -> None:
     from . import auth
 
+    if args.service == "export":
+        return cmd_export(args)
+    if args.service == "import":
+        if sys.stdin.isatty():
+            print("Paste the output of `dbx2gdrive auth export`, then press Ctrl-D:", file=sys.stderr)
+        auth.import_env(args.config_dir, sys.stdin.read())
+        print(f"Sign-ins saved to {args.config_dir}.")
+        return
     if args.service == "dropbox":
         key = args.app_key or os.environ.get("DROPBOX_APP_KEY")
         if not key:
@@ -37,21 +46,62 @@ def cmd_auth(args) -> None:
 
 
 def _state_path(args) -> str:
-    return args.state or str(args.config_dir / "state.sqlite3")
+    return (args.state or os.environ.get("DBX2GDRIVE_STATE") or os.environ.get("DATABASE_URL")
+            or str(args.config_dir / "state.sqlite3"))
+
+
+def _idle(message: str, seconds: float = None) -> None:
+    """Service mode: wait instead of exiting, so the host doesn't restart us in a loop."""
+    deadline = time.monotonic() + seconds if seconds else None
+    while deadline is None or time.monotonic() < deadline:
+        log.info(message)
+        time.sleep(min(3600, deadline - time.monotonic()) if deadline else 3600)
 
 
 def cmd_migrate(args) -> int:
+    if not args.service:
+        return _migrate_once(args)
+    from .retry import FatalError
+
+    failed_rounds = 0
+    while True:
+        try:
+            rc = _migrate_once(args, service=True)
+        except FatalError as exc:
+            if exc.retry_in:
+                log.warning("%s Waiting, then resuming automatically.", exc)
+                _idle("Waiting for Google's limit to reset ...", exc.retry_in)
+                continue
+            _idle(f"PAUSED: {exc} Fix this, then restart the service to continue.")
+        except SystemExit as exc:  # e.g. missing/expired sign-in
+            _idle(f"PAUSED: {exc} Then restart the service.")
+        except Exception as exc:
+            if type(exc).__name__ == "AuthError":  # dropbox.exceptions.AuthError
+                _idle(f"PAUSED: Dropbox rejected the sign-in ({exc}). Re-run `dbx2gdrive auth dropbox`, "
+                      "re-import the sign-ins, then restart the service.")
+            log.exception("Unexpected error; retrying in 5 minutes")
+            time.sleep(300)
+            continue
+        if rc == 0:
+            _idle("Migration complete. Nothing left to do - you can stop/delete this service now.")
+        failed_rounds += 1
+        if failed_rounds > 3:
+            _idle("Migration finished, but some files could not be copied (see `dbx2gdrive status "
+                  "--problems`). You can stop this service.")
+        log.info("Some files failed; retrying them in 10 minutes (round %d of 3).", failed_rounds)
+        time.sleep(600)
+        args.skip_scan = True
+
+
+def _migrate_once(args, service: bool = False) -> int:
     from . import auth
     from .drive_dest import DriveDest
     from .dropbox_source import DropboxSource
     from .migrator import Migrator, Options, human
     from .retry import FatalError
-    from .state import State
+    from .state import State, is_postgres
 
-    if args.temp_dir:
-        Path(args.temp_dir).mkdir(parents=True, exist_ok=True)
-    src = DropboxSource(lambda: auth.dropbox_client(args.config_dir), temp_dir=args.temp_dir,
-                        include_team_space=not args.home_only)
+    src = DropboxSource(lambda: auth.dropbox_client(args.config_dir), include_team_space=not args.home_only)
     log.info("Source:      Dropbox account %s", src.account_label())
 
     if args.dry_run:
@@ -63,17 +113,19 @@ def cmd_migrate(args) -> int:
 
     dst = DriveDest(auth.google_credentials(args.config_dir), shared_drive_id=args.shared_drive_id)
     log.info("Destination: Google Drive account %s", dst.account_label())
-    args.config_dir.mkdir(parents=True, exist_ok=True)
-    state = State(_state_path(args))
+    state_path = _state_path(args)
+    if not is_postgres(state_path):
+        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+    state = State(state_path)
 
     stored_root = state.get_meta("dest_root_id")
     stored_source = state.get_meta("source_root")
     if stored_source is not None and stored_source != args.source:
-        raise SystemExit(f"This state file belongs to a migration of Dropbox '{stored_source or '/'}'. "
-                         "Use --state with a new file for a different source folder.")
+        raise SystemExit(f"This state database belongs to a migration of Dropbox '{stored_source or '/'}'. "
+                         "Use --state with a new database for a different source folder.")
     if args.dest_folder_id:
         if stored_root and stored_root != args.dest_folder_id:
-            raise SystemExit("This state file belongs to a different Drive destination. Use --state <new file>.")
+            raise SystemExit("This state database belongs to a different Drive destination. Use --state <new>.")
         root_id = args.dest_folder_id
         log.info("Destination folder: %s", dst.check_folder(root_id))
     elif stored_root:
@@ -93,6 +145,8 @@ def cmd_migrate(args) -> int:
     except FatalError as exc:
         log.error("Migration stopped: %s", exc)
         _print_summary(state)
+        if service:
+            raise
         return 2
     except KeyboardInterrupt:
         log.warning("Stopped by user. Run the same command again to resume.")
@@ -101,6 +155,17 @@ def cmd_migrate(args) -> int:
     log.info("Run finished: %d files copied (%s), %d failed.",
              migrator.files_done, human(migrator.bytes_done), migrator.files_failed)
     return _print_summary(state)
+
+
+def cmd_export(args) -> int:
+    from . import auth
+
+    env = auth.export_env(args.config_dir)
+    print("# Secrets: paste these into your server's environment settings. Do not share or commit them.",
+          file=sys.stderr)
+    for k, v in env.items():
+        print(f"{k}={v}")
+    return 0
 
 
 def _print_summary(state, dry_run: bool = False) -> int:
@@ -138,8 +203,10 @@ def _print_summary(state, dry_run: bool = False) -> int:
 def cmd_status(args) -> int:
     from .state import State
 
+    from .state import is_postgres
+
     path = _state_path(args)
-    if not Path(path).exists():
+    if not is_postgres(path) and not Path(path).exists():
         raise SystemExit(f"No migration state at {path}")
     state = State(path)
     rc = _print_summary(state)
@@ -159,7 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     a = sub.add_parser("auth", help="authorize access to Dropbox or Google Drive")
-    a.add_argument("service", choices=["dropbox", "google"])
+    a.add_argument("service", choices=["dropbox", "google", "export", "import"],
+                   help="'export' prints the sign-ins for a server; 'import' (on the server) reads them")
     a.add_argument("--app-key", help="Dropbox app key (or env DROPBOX_APP_KEY)")
     a.add_argument("--app-secret", help="Dropbox app secret (optional; PKCE is used without it)")
     a.add_argument("--client-secret", help="Google OAuth desktop client JSON file")
@@ -175,8 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="name of the folder to create in My Drive / the shared drive (default: Dropbox)")
     m.add_argument("--shared-drive-id", help="copy into this shared drive instead of My Drive")
     m.add_argument("--workers", type=int, default=4, help="parallel transfers (default 4)")
-    m.add_argument("--temp-dir", help="where files are staged between download and upload")
-    m.add_argument("--state", help="state database path (default <config-dir>/state.sqlite3)")
+    m.add_argument("--state", help="state database: a file path or a postgres:// URL "
+                   "(default: $DBX2GDRIVE_STATE, $DATABASE_URL, or <config-dir>/state.sqlite3)")
+    m.add_argument("--service", action="store_true",
+                   help="for servers: never exit; wait out daily limits, retry failures, then idle")
     m.add_argument("--dry-run", action="store_true", help="only list what would be copied")
     m.add_argument("--skip-scan", action="store_true", help="don't re-list Dropbox; just finish what's pending")
     m.add_argument("--retry-skipped", action="store_true", help="also retry files previously skipped as uncopyable")
@@ -186,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.set_defaults(func=cmd_migrate)
 
     s = sub.add_parser("status", help="show progress of the migration")
-    s.add_argument("--state", help="state database path")
+    s.add_argument("--state", help="state database path or postgres:// URL")
     s.add_argument("--problems", action="store_true", help="list failed/skipped files and why")
     s.add_argument("--limit", type=int, default=200)
     s.set_defaults(func=cmd_status)

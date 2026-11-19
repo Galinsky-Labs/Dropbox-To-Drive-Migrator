@@ -4,6 +4,8 @@
 
 It's built for large accounts:
 
+- **Streams; never stores.** Each file is piped straight from Dropbox into Google Drive in 16 MB pieces held in memory. Nothing is written to disk, so the machine running it needs no free space. Run it on a cheap cloud server (below) and no data passes through your own computer at all.
+
 - **Resumable.** Progress is recorded per file in a local SQLite database. Stop it, lose your connection or reboot, then run the same command again and it picks up where it left off.
 - **Incremental.** When you re-run, it re-lists Dropbox, copies new files and overwrites the Drive copy of any file that changed. Unchanged files aren't touched.
 - **Verified.** Every download is checked against Dropbox's `content_hash`. Every upload is checked against the MD5 that Google Drive reports. A mismatch is retried and never recorded as done.
@@ -18,7 +20,7 @@ Requires Python 3.9+.
 git clone https://github.com/Galinsky-Labs/Dropbox-To-Drive-Migrator.git
 cd Dropbox-To-Drive-Migrator
 python3 -m venv .venv && source .venv/bin/activate
-pip install .
+pip install .            # add '.[postgres]' to store progress in Postgres
 ```
 
 ## One-time setup
@@ -55,7 +57,44 @@ A browser opens so you can sign in to the **destination** Google account. On a h
 
 Tokens are stored in `~/.dbx2gdrive/` (permissions `0600`). Set `DBX2GDRIVE_HOME` or pass `--config-dir` to change the location.
 
-## Migrate
+## Run it in the cloud (recommended)
+
+Your computer is only used for the sign-ins above, which create small login tokens. The files themselves flow **Dropbox → cloud server → Google Drive**, and the server keeps running if you close your laptop.
+
+### Option A: Google Cloud VM (best for large accounts; usually free)
+
+Traffic *into* a Google Cloud VM is free, and so is traffic from the VM *to Google Drive*, so the transfer itself costs nothing. One `e2-micro` VM in `us-central1`, `us-west1` or `us-east1` is covered by Google Cloud's free tier, though the project needs billing enabled.
+
+1. On your computer, after the two sign-ins, print the tokens to paste into the server:
+   ```bash
+   dbx2gdrive auth export
+   ```
+2. In the Google Cloud console: **Compute Engine → VM instances → Create instance**. Choose machine type **e2-micro**, region **us-central1**, and the default Debian image, then click **Create**.
+3. Click **SSH** next to the new VM. A terminal opens in your browser. Run:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Galinsky-Labs/Dropbox-To-Drive-Migrator/main/deploy/install-vm.sh | sudo bash
+   ```
+   When asked, paste the `auth export` output and press **Ctrl-D**. The migration starts as a background service, and you can close the window.
+4. Check on it any time from the VM's SSH window:
+   ```bash
+   sudo dbx2gdrive status
+   ```
+   ```bash
+   sudo journalctl -u dbx2gdrive -f
+   ```
+   When it reports *Migration complete*, delete the VM.
+
+The service waits out Google's daily upload limit by itself and retries failed files. If the Google sign-in expires (7 days in *Testing* mode), the log says so. In that case, sign in again on your computer, run `dbx2gdrive auth export`, then on the VM run `sudo dbx2gdrive auth import` followed by `sudo systemctl restart dbx2gdrive`.
+
+### Option B: Render background worker
+
+`render.yaml` defines a worker that runs `dbx2gdrive migrate --service`. Set `DATABASE_URL` to a Postgres database (for example Neon); progress is stored there because a Render instance's disk is wiped on every restart. Also set the variables printed by `dbx2gdrive auth export`.
+
+> **Cost warning:** Render bills outbound bandwidth, meaning everything uploaded to Drive, at about $0.15/GB beyond the workspace's small included allowance. That's roughly $150 per TB. Use Option A for anything large.
+
+## Run it on your own computer
+
+This works too. Files still stream through memory without touching your disk, but they do pass over your internet connection.
 
 Preview what will be copied:
 
@@ -69,7 +108,7 @@ Copy everything into a new **`Dropbox`** folder in My Drive:
 dbx2gdrive migrate --log-file migration.log
 ```
 
-Run the same command again at any time. It resumes interrupted work, retries failures and picks up anything new or changed in Dropbox. Use `screen`/`tmux` (or `nohup`) for big accounts.
+Run the same command again at any time. It resumes interrupted work, retries failures and picks up anything new or changed in Dropbox.
 
 Check progress, including from another terminal while it runs:
 
@@ -87,11 +126,11 @@ dbx2gdrive status --problems   # list failed / skipped files and why
 | `--dest-folder-id ID` | Copy into an existing Drive folder (the ID from its URL) |
 | `--shared-drive-id ID` | Copy into a shared drive instead of My Drive |
 | `--workers N` | Parallel transfers (default 4; 8–16 works well on fast links) |
-| `--temp-dir DIR` | Where files are staged between download and upload (needs roughly `workers × largest file` of free space) |
 | `--skip-scan` | Don't re-list Dropbox; just finish what's pending from the last scan |
 | `--retry-skipped` | Retry files that were previously skipped as uncopyable |
 | `--home-only` | Business accounts: only your member folder, not the team space |
-| `--state FILE` | Use a separate state DB (needed to run a second, different migration) |
+| `--state FILE_OR_URL` | Progress database: a file, or a `postgres://` URL (also `$DBX2GDRIVE_STATE` / `$DATABASE_URL`) |
+| `--service` | For servers: never exit; wait out daily limits, retry failures, then idle when done |
 | `-v` | Log every file |
 
 Exit codes: `0` everything copied, `1` some files failed or were skipped (re-run, or see `status --problems`), `2` stopped on a fatal condition (for example Drive full or the daily upload limit), `130` interrupted.
@@ -102,11 +141,13 @@ Exit codes: `0` everything copied, `1` some files failed or were skipped (re-run
 - **Drive storage.** Make sure the destination account has enough free space; `--dry-run` shows the total size. Drive's per-file maximum is 5 TB.
 - **What doesn't transfer.** Sharing permissions, comments, version history and links aren't copied, because Drive has no equivalent import for them. Files Dropbox refuses to serve (for example DMCA-restricted) are recorded as *skipped* and listed by `status --problems`.
 - **It's a copy, not a sync.** Nothing is ever deleted from Dropbox or from Drive. If a file is deleted or renamed in Dropbox after it was copied, the old copy stays in Drive and the renamed file is copied again under its new name.
-- **Disk.** Each file is streamed to a temp file, verified, uploaded and then deleted immediately.
+- **Memory.** About 16 MB per worker (64 MB at the default `--workers 4`). Nothing goes to disk except the small progress database.
+- **Verification.** Dropbox's content hash is checked as the last bytes stream through, *before* Google is told the upload is complete, so a corrupted download never becomes a file in Drive.
 
 ## Development
 
 ```bash
 pip install -e '.[dev]'
 pytest
+# Postgres tests: DBX2GDRIVE_TEST_PG=postgresql://user@host/throwaway_db pytest
 ```

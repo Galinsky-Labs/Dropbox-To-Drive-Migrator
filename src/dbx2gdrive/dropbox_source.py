@@ -1,9 +1,6 @@
-"""Reads the Dropbox tree and downloads files to local temp files."""
+"""Lists the Dropbox tree and streams file contents (no local disk is used)."""
 
-import hashlib
 import logging
-import os
-import tempfile
 import threading
 from typing import Iterator
 
@@ -11,9 +8,9 @@ import dropbox
 from dropbox import files as dbx_files
 from dropbox.common import PathRoot
 
-from .hashing import DropboxContentHasher
-from .models import Downloaded, Entry
+from .models import Entry
 from .retry import PermanentError
+from .stream import SourceStream
 
 log = logging.getLogger(__name__)
 CHUNK = 1024 * 1024
@@ -24,10 +21,9 @@ def _iso(dt) -> str:
 
 
 class DropboxSource:
-    def __init__(self, client_factory, temp_dir: str = None, include_team_space: bool = True):
+    def __init__(self, client_factory, include_team_space: bool = True):
         self._factory = client_factory
         self._local = threading.local()
-        self.temp_dir = temp_dir
         self._path_root = None
         if include_team_space:
             # Business accounts with a team space: list from the root namespace so team
@@ -80,38 +76,21 @@ class DropboxSource:
             )
         return None  # DeletedMetadata
 
-    def download(self, entry: Entry) -> Downloaded:
+    def open(self, entry: Entry) -> SourceStream:
+        """Start streaming a file's bytes from Dropbox. Nothing touches local disk."""
         try:
             if entry.downloadable:
                 _, resp = self.client.files_download(entry.id)
-                name, expected_hash = entry.name, entry.content_hash
+                name, size, expected_hash = entry.name, entry.size, entry.content_hash
             elif entry.exportable:
                 # Paper docs and other cloud-only files: export to a regular file format.
                 result, resp = self.client.files_export(entry.id)
-                name, expected_hash = result.export_metadata.name, None
+                name, size, expected_hash = result.export_metadata.name, None, None
             else:
                 raise PermanentError("file is not downloadable and has no export format")
         except dropbox.exceptions.ApiError as exc:
             raise self._classify(exc) from exc
-
-        fd, local_path = tempfile.mkstemp(prefix="dbx2gdrive-", dir=self.temp_dir)
-        md5, ch, size = hashlib.md5(), DropboxContentHasher(), 0
-        try:
-            with os.fdopen(fd, "wb") as out, resp:
-                for chunk in resp.iter_content(CHUNK):
-                    out.write(chunk)
-                    md5.update(chunk)
-                    ch.update(chunk)
-                    size += len(chunk)
-            digest = ch.hexdigest()
-            if expected_hash and digest != expected_hash:
-                raise IOError(f"Dropbox content hash mismatch (got {digest}, expected {expected_hash})")
-            if entry.downloadable and size != entry.size:
-                raise IOError(f"size mismatch (got {size}, expected {entry.size})")
-        except BaseException:
-            os.unlink(local_path)
-            raise
-        return Downloaded(local_path, name, size, md5.hexdigest(), digest)
+        return SourceStream(resp.iter_content(CHUNK), name, size, expected_hash, closer=resp.close)
 
     @staticmethod
     def _classify(exc):

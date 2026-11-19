@@ -1,4 +1,9 @@
-"""Interactive OAuth for both services. Tokens are stored locally with 0600 permissions."""
+"""Interactive OAuth for both services.
+
+Tokens are stored locally with 0600 permissions. On a server, supply them through
+environment variables instead (see `dbx2gdrive auth export`):
+  DROPBOX_APP_KEY, DROPBOX_REFRESH_TOKEN, [DROPBOX_APP_SECRET], GOOGLE_TOKEN_JSON
+"""
 
 import json
 import os
@@ -36,13 +41,68 @@ def dropbox_login(config_dir: Path, app_key: str, app_secret: str = None) -> Non
     print(f"Dropbox authorized for account {result.account_id}.")
 
 
-def dropbox_client(config_dir: Path):
-    import dropbox
-
+def _dropbox_token(config_dir: Path) -> dict:
+    if os.environ.get("DROPBOX_REFRESH_TOKEN"):
+        if not os.environ.get("DROPBOX_APP_KEY"):
+            raise SystemExit("DROPBOX_REFRESH_TOKEN is set but DROPBOX_APP_KEY is not.")
+        return {"app_key": os.environ["DROPBOX_APP_KEY"], "app_secret": os.environ.get("DROPBOX_APP_SECRET"),
+                "refresh_token": os.environ["DROPBOX_REFRESH_TOKEN"]}
     path = config_dir / "dropbox_token.json"
     if not path.exists():
         raise SystemExit("Dropbox is not authorized yet. Run: dbx2gdrive auth dropbox --app-key <KEY>")
-    tok = json.loads(path.read_text())
+    return json.loads(path.read_text())
+
+
+def _google_token(config_dir: Path):
+    """Returns (token dict, path to persist refreshed tokens to or None)."""
+    if os.environ.get("GOOGLE_TOKEN_JSON"):
+        try:
+            return json.loads(os.environ["GOOGLE_TOKEN_JSON"]), None
+        except ValueError:
+            raise SystemExit("GOOGLE_TOKEN_JSON is not valid JSON (paste it exactly as `auth export` prints it).")
+    path = config_dir / "google_token.json"
+    if not path.exists():
+        raise SystemExit("Google Drive is not authorized yet. Run: dbx2gdrive auth google --client-secret <FILE>")
+    return json.loads(path.read_text()), path
+
+
+def export_env(config_dir: Path) -> dict:
+    """The environment variables a server needs, built from the local sign-ins."""
+    dbx = _dropbox_token(config_dir)
+    google, _ = _google_token(config_dir)
+    env = {"DROPBOX_APP_KEY": dbx["app_key"], "DROPBOX_REFRESH_TOKEN": dbx["refresh_token"]}
+    if dbx.get("app_secret"):
+        env["DROPBOX_APP_SECRET"] = dbx["app_secret"]
+    google = {k: v for k, v in google.items() if k not in ("token", "expiry")}  # long-lived parts only
+    env["GOOGLE_TOKEN_JSON"] = json.dumps(google, separators=(",", ":"))
+    return env
+
+
+def import_env(config_dir: Path, text: str) -> None:
+    """Inverse of export_env: store pasted KEY=VALUE lines as this machine's token files."""
+    env = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    missing = [k for k in ("DROPBOX_APP_KEY", "DROPBOX_REFRESH_TOKEN", "GOOGLE_TOKEN_JSON") if k not in env]
+    if missing:
+        raise SystemExit(f"Missing from the pasted text: {', '.join(missing)}")
+    try:
+        google = json.loads(env["GOOGLE_TOKEN_JSON"])
+    except ValueError:
+        raise SystemExit("GOOGLE_TOKEN_JSON is not valid JSON - paste the `auth export` output exactly.")
+    _write_secret(config_dir / "dropbox_token.json",
+                  {"app_key": env["DROPBOX_APP_KEY"], "app_secret": env.get("DROPBOX_APP_SECRET"),
+                   "refresh_token": env["DROPBOX_REFRESH_TOKEN"]})
+    _write_secret(config_dir / "google_token.json", google)
+
+
+def dropbox_client(config_dir: Path):
+    import dropbox
+
+    tok = _dropbox_token(config_dir)
     return dropbox.Dropbox(
         oauth2_refresh_token=tok["refresh_token"],
         app_key=tok["app_key"],
@@ -66,10 +126,8 @@ def google_credentials(config_dir: Path):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    path = config_dir / "google_token.json"
-    if not path.exists():
-        raise SystemExit("Google Drive is not authorized yet. Run: dbx2gdrive auth google --client-secret <FILE>")
-    creds = Credentials.from_authorized_user_file(str(path), GOOGLE_SCOPES)
+    info, path = _google_token(config_dir)
+    creds = Credentials.from_authorized_user_info(info, GOOGLE_SCOPES)
     if not creds.valid:
         from google.auth.exceptions import RefreshError
 
@@ -78,5 +136,6 @@ def google_credentials(config_dir: Path):
         except RefreshError:
             raise SystemExit("Google sign-in has expired or was revoked (apps in 'Testing' status expire "
                              "after 7 days). Run: dbx2gdrive auth google --client-secret <FILE>")
-        _write_secret(path, json.loads(creds.to_json()))
+        if path:
+            _write_secret(path, json.loads(creds.to_json()))
     return creds

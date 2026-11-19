@@ -25,14 +25,3 @@ class Entry:
     @property
     def depth(self) -> int:
         return self.path_lower.count("/")
-
-
-@dataclass
-class Downloaded:
-    """A file pulled down from Dropbox into a local temp file."""
-
-    local_path: str
-    name: str  # may differ from the Dropbox name for exported files (e.g. Paper -> .md)
-    size: int
-    md5: str
-    content_hash: str

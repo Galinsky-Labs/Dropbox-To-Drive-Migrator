@@ -1,7 +1,6 @@
 """Orchestrates scan -> folders -> files, with concurrency, resume and progress reporting."""
 
 import logging
-import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -170,15 +169,10 @@ class Migrator:
         adopt = row["attempts"] > 0 and not existing_id
 
         def attempt():
-            dl = self.src.download(entry)
-            try:
-                return self.dst.upload(dl, parent_id, entry.client_modified,
-                                       existing_id=existing_id, adopt_existing=adopt), dl.size
-            finally:
-                try:
-                    os.unlink(dl.local_path)
-                except OSError:
-                    pass
+            with self.src.open(entry) as stream:  # streamed Dropbox -> Drive, never written to disk
+                drive_id = self.dst.upload(stream, parent_id, entry.client_modified, rev=entry.rev,
+                                           existing_id=existing_id, adopt_existing=adopt)
+                return drive_id, stream.bytes_read
 
         try:
             drive_id, size = with_retries(attempt, attempts=self.opts.attempts, what=f"copy {entry.path_display}")

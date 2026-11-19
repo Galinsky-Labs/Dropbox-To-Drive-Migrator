@@ -1,9 +1,6 @@
-import hashlib
-import os
-import tempfile
-
 from dbx2gdrive.hashing import DropboxContentHasher
-from dbx2gdrive.models import Downloaded, Entry
+from dbx2gdrive.models import Entry
+from dbx2gdrive.stream import SourceStream
 
 
 def folder(path):
@@ -28,17 +25,13 @@ class FakeSource:
         root = root.lower()
         return [e for e in self.entries if e.path_lower == root or e.path_lower.startswith(root + "/")]
 
-    def download(self, entry):
+    def open(self, entry):
         errs = self.fail.get(entry.id)
         if errs:
             raise errs.pop(0)
         data = next(e for e in self.entries if e.id == entry.id).data
-        fd, path = tempfile.mkstemp()
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        h = DropboxContentHasher()
-        h.update(data)
-        return Downloaded(path, entry.name, len(data), hashlib.md5(data).hexdigest(), h.hexdigest())
+        chunks = [data[i:i + 3] for i in range(0, len(data), 3)]
+        return SourceStream(chunks, entry.name, entry.size, entry.content_hash)
 
 
 class FakeDrive:
@@ -59,15 +52,18 @@ class FakeDrive:
                 return fid
         return self._new(name=name, parent=parent_id, folder=True)
 
-    def upload(self, dl, parent_id, modified, existing_id=None, adopt_existing=False):
+    def upload(self, stream, parent_id, modified, rev=None, existing_id=None, adopt_existing=False):
         if self.fail_uploads:
             raise self.fail_uploads.pop(0)
-        assert os.path.exists(dl.local_path)
-        data = open(dl.local_path, "rb").read()
+        data = b""
+        while True:
+            data += stream.read(4)
+            if stream.at_eof():
+                break
         if existing_id:
             self.items[existing_id].update(data=data, modified=modified)
             return existing_id
-        return self._new(name=dl.name, parent=parent_id, folder=False, data=data, modified=modified)
+        return self._new(name=stream.name, parent=parent_id, folder=False, data=data, modified=modified)
 
     def tree(self, root):
         """Return {relative/path: data-or-None} for everything under root."""

@@ -1,7 +1,3 @@
-import glob
-import os
-import tempfile
-
 import pytest
 
 from dbx2gdrive.migrator import Migrator, Options
@@ -48,7 +44,6 @@ def test_full_migration_mirrors_tree():
     assert m.files_done == 5 and m.files_failed == 0
     a = next(i for i in dst.items.values() if i["name"] == "a.jpg")
     assert a["modified"] == "2020-01-02T03:04:05.000Z"
-    assert not glob.glob(os.path.join(tempfile.gettempdir(), "tmp*")) or True  # temp files cleaned in source
 
 
 def test_rerun_is_idempotent_and_picks_up_changes():
@@ -121,3 +116,13 @@ def test_state_persists_on_disk(tmp_path):
     m = run(src, dst, State(db), retry_skipped=True)
     assert m.files_done == 1
     assert dst.tree("ROOT") == expected(entries)
+
+
+def test_corrupt_dropbox_data_is_never_finalized():
+    entries = account()
+    entries[5].data = b"hellX"  # bytes no longer match the listed content_hash
+    src, dst, state = FakeSource(entries), FakeDrive(), State(":memory:")
+    m = run(src, dst, state)
+    assert m.files_failed == 1
+    assert "/notes.txt" not in dst.tree("ROOT")
+    assert "hash mismatch" in state.problems()[0]["error"]

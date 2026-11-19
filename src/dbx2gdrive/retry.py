@@ -12,7 +12,13 @@ class PermanentError(Exception):
 
 
 class FatalError(Exception):
-    """An error that should stop the whole migration (e.g. Drive storage full)."""
+    """An error that should stop the whole migration (e.g. Drive storage full).
+
+    retry_in: seconds after which the condition is expected to clear by itself (daily quotas)."""
+
+    def __init__(self, message, retry_in=None):
+        super().__init__(message)
+        self.retry_in = retry_in
 
 
 def with_retries(fn, *, attempts=5, base_delay=2.0, max_delay=120.0, what="operation"):
