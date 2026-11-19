@@ -42,10 +42,16 @@ exec sudo -u dbx2gdrive DBX2GDRIVE_HOME=$HOME_DIR $APP/venv/bin/dbx2gdrive "\$@"
 WRAP
 chmod 755 /usr/local/bin/dbx2gdrive
 
+if [ ! -f "$HOME_DIR/dropbox_token.json" ]; then
+  echo
+  echo "==> Step 1 of 2: connect Dropbox (read-only)"
+  read -r -p "    Paste your Dropbox app key: " DBX_KEY < /dev/tty
+  /usr/local/bin/dbx2gdrive auth dropbox --app-key "$DBX_KEY" < /dev/tty
+fi
 if [ ! -f "$HOME_DIR/google_token.json" ]; then
   echo
-  echo "==> Paste the output of 'dbx2gdrive auth export' from your computer, then press Ctrl-D:"
-  /usr/local/bin/dbx2gdrive auth import < /dev/tty
+  echo "==> Step 2 of 2: connect Google Drive"
+  /usr/local/bin/dbx2gdrive auth google --client-secret - --manual < /dev/tty
 fi
 
 echo "==> Creating the background service"
@@ -78,5 +84,7 @@ cat <<DONE
   Problem files:   sudo dbx2gdrive status --problems
   Live log:        sudo journalctl -u dbx2gdrive -f
   Stop / start:    sudo systemctl stop dbx2gdrive / sudo systemctl start dbx2gdrive
-  New sign-ins:    sudo dbx2gdrive auth import   (then: sudo systemctl restart dbx2gdrive)
+  Google sign-in expired (7-day limit in Testing mode):
+                   sudo dbx2gdrive auth google --client-secret - --manual
+                   sudo systemctl restart dbx2gdrive
 DONE

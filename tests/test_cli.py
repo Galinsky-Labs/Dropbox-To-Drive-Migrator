@@ -117,3 +117,43 @@ def test_service_pauses_on_bad_dropbox_signin(monkeypatch, tmp_path):
 def test_service_retries_unexpected_errors_and_failed_files(monkeypatch, tmp_path):
     calls, idles = _service(monkeypatch, tmp_path, [RuntimeError("boom"), 1, 1, 1, 1])
     assert len(calls) == 5 and "could not be copied" in idles[-1][0]
+
+
+def test_google_manual_signin_on_server(tmp_path, monkeypatch, capsys):
+    import json
+    from urllib.parse import parse_qs, urlparse
+
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    client = {"installed": {"client_id": "cid.apps.googleusercontent.com", "client_secret": "sec",
+                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                            "token_uri": "https://oauth2.googleapis.com/token",
+                            "redirect_uris": ["http://localhost"]}}
+    pasted = json.dumps(client, indent=2).splitlines()  # pasted over many lines
+    seen = {}
+
+    def fake_fetch(self, **kw):
+        seen.update(kw, verifier=self.code_verifier)
+        self.oauth2session.token = {"access_token": "AT", "refresh_token": "RT", "expires_in": 3600, "expires_at": 9e9}
+
+    monkeypatch.setattr(InstalledAppFlow, "fetch_token", fake_fetch)
+    answers = iter(pasted + ["http://localhost:1/?state=s&code=4/abc&scope=https://www.googleapis.com/auth/drive"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    assert cli.main(["--config-dir", str(tmp_path), "auth", "google", "--client-secret", "-", "--manual"]) == 0
+
+    out = capsys.readouterr().out
+    url = next(w for w in out.split() if w.startswith("https://accounts.google.com"))
+    q = parse_qs(urlparse(url).query)
+    assert q["redirect_uri"] == ["http://localhost:1/"] and q["access_type"] == ["offline"]
+    assert "code_challenge" in q and seen["verifier"]  # PKCE
+    assert seen["authorization_response"].startswith("http://localhost:1/")
+    saved = json.loads((tmp_path / "google_token.json").read_text())
+    assert saved["refresh_token"] == "RT" and saved["client_id"] == "cid.apps.googleusercontent.com"
+
+
+def test_google_signin_rejects_web_client(tmp_path, monkeypatch):
+    import json
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"web": {"client_id": "x"}}))
+    with pytest.raises(SystemExit, match="Desktop app"):
+        cli.main(["--config-dir", str(tmp_path), "auth", "google", "--client-secret", str(p), "--manual"])

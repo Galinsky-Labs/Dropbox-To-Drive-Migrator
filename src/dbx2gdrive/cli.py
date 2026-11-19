@@ -41,8 +41,9 @@ def cmd_auth(args) -> None:
         auth.dropbox_login(args.config_dir, key, args.app_secret or os.environ.get("DROPBOX_APP_SECRET"))
     else:
         if not args.client_secret:
-            raise SystemExit("Pass --client-secret path/to/client_secret.json (see README).")
-        auth.google_login(args.config_dir, args.client_secret, open_browser=not args.no_browser, port=args.port)
+            raise SystemExit("Pass --client-secret path/to/client_secret.json, or '-' to paste it (see README).")
+        auth.google_login(args.config_dir, args.client_secret, open_browser=not args.no_browser, port=args.port,
+                          manual=args.manual)
 
 
 def _state_path(args) -> str:
@@ -230,7 +231,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="'export' prints the sign-ins for a server; 'import' (on the server) reads them")
     a.add_argument("--app-key", help="Dropbox app key (or env DROPBOX_APP_KEY)")
     a.add_argument("--app-secret", help="Dropbox app secret (optional; PKCE is used without it)")
-    a.add_argument("--client-secret", help="Google OAuth desktop client JSON file")
+    a.add_argument("--client-secret", help="Google OAuth desktop client JSON file ('-' to paste its contents)")
+    a.add_argument("--manual", action="store_true",
+                   help="servers without a browser: sign in on any device and paste back the final address")
     a.add_argument("--no-browser", action="store_true", help="print the Google URL instead of opening a browser")
     a.add_argument("--port", type=int, default=0, help="local port for the Google OAuth redirect (default: random)")
     a.set_defaults(func=cmd_auth)

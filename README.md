@@ -65,17 +65,19 @@ Your computer is only used for the sign-ins above, which create small login toke
 
 Traffic *into* a Google Cloud VM is free, and so is traffic from the VM *to Google Drive*, so the transfer itself costs nothing. One `e2-micro` VM in `us-central1`, `us-west1` or `us-east1` is covered by Google Cloud's free tier, though the project needs billing enabled.
 
-1. On your computer, after the two sign-ins, print the tokens to paste into the server:
-   ```bash
-   dbx2gdrive auth export
-   ```
-2. In the Google Cloud console: **Compute Engine → VM instances → Create instance**. Choose machine type **e2-micro**, region **us-central1**, and the default Debian image, then click **Create**.
-3. Click **SSH** next to the new VM. A terminal opens in your browser. Run:
+You don't need to install anything on your own computer: both sign-ins happen in the VM's browser SSH window. Have the Dropbox app key and the Google client JSON file from the setup above ready.
+
+1. In the Google Cloud console: **Compute Engine → VM instances → Create instance**. Choose machine type **e2-micro**, region **us-central1**, and the default Debian image, then click **Create**.
+2. Click **SSH** next to the new VM. A terminal opens in your browser. Run:
    ```bash
    curl -fsSL https://raw.githubusercontent.com/Galinsky-Labs/Dropbox-To-Drive-Migrator/main/deploy/install-vm.sh | sudo bash
    ```
-   When asked, paste the `auth export` output and press **Ctrl-D**. The migration starts as a background service, and you can close the window.
-4. Check on it any time from the VM's SSH window:
+   It asks you to:
+   - paste the Dropbox app key, open the link it shows, click **Allow** and paste the code back;
+   - paste the contents of the Google client JSON file (open it in a text editor, copy everything), open the link it shows and sign in with the **destination** Google account. Your browser then lands on a page that can't load (`localhost`); that's expected. Copy the full address from the address bar and paste it back.
+
+   The migration then starts as a background service, and you can close the window.
+3. Check on it any time from the VM's SSH window:
    ```bash
    sudo dbx2gdrive status
    ```
@@ -84,7 +86,9 @@ Traffic *into* a Google Cloud VM is free, and so is traffic from the VM *to Goog
    ```
    When it reports *Migration complete*, delete the VM.
 
-The service waits out Google's daily upload limit by itself and retries failed files. If the Google sign-in expires (7 days in *Testing* mode), the log says so. In that case, sign in again on your computer, run `dbx2gdrive auth export`, then on the VM run `sudo dbx2gdrive auth import` followed by `sudo systemctl restart dbx2gdrive`.
+The service waits out Google's daily upload limit by itself and retries failed files. If the Google sign-in expires (7 days in *Testing* mode), the log says so. On the VM, run `sudo dbx2gdrive auth google --client-secret - --manual` and then `sudo systemctl restart dbx2gdrive`; it resumes where it stopped.
+
+(If you already signed in on your own computer, `dbx2gdrive auth export` there and `sudo dbx2gdrive auth import` on the VM copy the sign-ins over instead.)
 
 ### Option B: Render background worker
 

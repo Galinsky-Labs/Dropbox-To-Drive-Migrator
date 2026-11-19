@@ -113,11 +113,51 @@ def dropbox_client(config_dir: Path):
     )
 
 
-def google_login(config_dir: Path, client_secret_file: str, open_browser: bool = True, port: int = 0) -> None:
+def _read_client_config(source: str) -> dict:
+    """Client JSON from a file path, or pasted at the prompt when source is '-'."""
+    if source != "-":
+        return json.loads(Path(source).expanduser().read_text())
+    print("Paste the contents of the client_secret_....json file you downloaded from Google Cloud:")
+    text = ""
+    while True:
+        line = input()
+        text += line
+        try:
+            return json.loads(text)
+        except ValueError:
+            continue  # pasted over several lines; keep reading
+
+
+def google_login(config_dir: Path, client_secret: str, open_browser: bool = True, port: int = 0,
+                 manual: bool = False) -> None:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    flow = InstalledAppFlow.from_client_secrets_file(client_secret_file, GOOGLE_SCOPES)
-    creds = flow.run_local_server(port=port, open_browser=open_browser, prompt="consent", access_type="offline")
+    config = _read_client_config(client_secret)
+    if "installed" not in config:
+        raise SystemExit("That client file is not a 'Desktop app' OAuth client. In Google Cloud, create an "
+                         "OAuth client ID with application type 'Desktop app' and download its JSON.")
+    if manual:
+        # For servers with no browser: sign in on any device, then paste back the address the
+        # browser ends up on (a "can't connect to localhost" page is expected).
+        flow = InstalledAppFlow.from_client_config(config, GOOGLE_SCOPES, redirect_uri="http://localhost:1/")
+        url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        print("\n1. Open this link in your browser and sign in with the Google account to copy INTO:\n\n   "
+              + url + "\n")
+        print("2. Approve access (on 'Google hasn't verified this app', click Continue).")
+        print("3. Your browser then shows a page that can't load (localhost). That's expected.")
+        answer = input("   Copy the FULL address from the browser's address bar and paste it here: ").strip()
+        os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")  # the redirect is to localhost
+        if answer.startswith("http"):
+            flow.fetch_token(authorization_response=answer)
+        else:
+            flow.fetch_token(code=answer)
+        creds = flow.credentials
+    else:
+        flow = InstalledAppFlow.from_client_config(config, GOOGLE_SCOPES)
+        creds = flow.run_local_server(port=port, open_browser=open_browser, prompt="consent",
+                                      access_type="offline")
+    if not creds.refresh_token:
+        raise SystemExit("Google did not return a refresh token; please run this again.")
     _write_secret(config_dir / "google_token.json", json.loads(creds.to_json()))
     print("Google Drive authorized.")
 
