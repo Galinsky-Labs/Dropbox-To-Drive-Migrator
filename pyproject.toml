@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbx2gdrive"
+version = "1.0.0"
+description = "Bulk-migrate an entire Dropbox account to Google Drive, resumably."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "dropbox>=12.0",
+  "google-api-python-client>=2.100",
+  "google-auth>=2.20",
+  "google-auth-oauthlib>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+dbx2gdrive = "dbx2gdrive.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

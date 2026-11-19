@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+# secrets and run state - never commit these
+client_secret*.json
+*token*.json
+*.sqlite3
+*.sqlite3-*
+.dbx2gdrive/
