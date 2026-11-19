@@ -18,8 +18,14 @@ MIGRATE_ARGS="${MIGRATE_ARGS:-}"
 
 echo "==> Installing packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq git python3 python3-venv >/dev/null
+# A fresh VM runs its own package updates for the first few minutes; wait for them
+# instead of failing on the package-manager lock.
+APT_WAIT="-o DPkg::Lock::Timeout=900"
+if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+  echo "    (the VM is still installing its own first-boot updates; waiting for them to finish...)"
+fi
+apt-get $APT_WAIT update -qq
+apt-get $APT_WAIT install -y -qq git python3 python3-venv >/dev/null
 
 echo "==> Installing dbx2gdrive"
 if [ -d "$APP/src/.git" ]; then
