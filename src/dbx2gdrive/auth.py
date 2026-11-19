@@ -71,6 +71,12 @@ def google_credentials(config_dir: Path):
         raise SystemExit("Google Drive is not authorized yet. Run: dbx2gdrive auth google --client-secret <FILE>")
     creds = Credentials.from_authorized_user_file(str(path), GOOGLE_SCOPES)
     if not creds.valid:
-        creds.refresh(Request())
+        from google.auth.exceptions import RefreshError
+
+        try:
+            creds.refresh(Request())
+        except RefreshError:
+            raise SystemExit("Google sign-in has expired or was revoked (apps in 'Testing' status expire "
+                             "after 7 days). Run: dbx2gdrive auth google --client-secret <FILE>")
         _write_secret(path, json.loads(creds.to_json()))
     return creds

@@ -6,6 +6,7 @@ import mimetypes
 import threading
 from typing import Optional
 
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -24,6 +25,8 @@ FATAL_REASONS = {
     "uploadLimitExceeded": "Google's daily upload limit (~750 GB/day) was hit. Re-run in 24 hours to continue.",
     "dailyLimitExceeded": "Google Drive API daily quota exhausted. Re-run tomorrow to continue.",
 }
+REAUTH_MESSAGE = ("Google sign-in has expired or was revoked (apps in 'Testing' status expire after 7 days). "
+                  "Run `dbx2gdrive auth google --client-secret <FILE>`, then re-run migrate to resume.")
 RETRYABLE_REASONS = {"userRateLimitExceeded", "rateLimitExceeded", "backendError", "internalError"}
 
 
@@ -83,6 +86,8 @@ class DriveDest:
             return request.execute(num_retries=5)
         except HttpError as exc:
             raise _translate(exc) from exc
+        except RefreshError as exc:
+            raise FatalError(REAUTH_MESSAGE) from exc
 
     def _list_kwargs(self):
         kw = {"supportsAllDrives": True, "includeItemsFromAllDrives": True}
@@ -152,6 +157,8 @@ class DriveDest:
                 resp = req.execute(num_retries=5)
         except HttpError as exc:
             raise _translate(exc) from exc
+        except RefreshError as exc:
+            raise FatalError(REAUTH_MESSAGE) from exc
 
         if dl.size > 0 and resp.get("md5Checksum") and resp["md5Checksum"] != dl.md5:
             if not existing_id:

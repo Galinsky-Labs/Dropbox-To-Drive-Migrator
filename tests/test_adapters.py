@@ -153,3 +153,21 @@ def test_drive_folder_reuse_escapes_quotes():
     seq = HttpMockSequence([ok({"files": [{"id": "EXIST"}]})])
     d = DriveDest(None, http_factory=lambda: seq)
     assert d.ensure_folder("Bob's \\ stuff", "P") == "EXIST"
+
+
+def test_expired_google_signin_is_fatal(tmp_path):
+    from google.auth.exceptions import RefreshError
+
+    class Expiring:
+        def __call__(self):
+            seq = HttpMockSequence([])
+            def boom(*a, **k):
+                raise RefreshError("invalid_grant: Token has been expired or revoked.")
+            seq.request = boom
+            return seq
+
+    d = DriveDest(None, http_factory=Expiring())
+    with pytest.raises(FatalError, match="auth google"):
+        d.ensure_folder("x", "P", reuse_existing=False)
+    with pytest.raises(FatalError, match="auth google"):
+        d.upload(make_dl(tmp_path, b"hi"), "P", None)

@@ -42,8 +42,9 @@ Open the URL it prints, click **Allow** and paste the code back in. This uses PK
 
 1. In <https://console.cloud.google.com/>, create (or pick) a project.
 2. Go to **APIs & Services → Library**, find **Google Drive API** and click **Enable**.
-3. Go to **APIs & Services → OAuth consent screen** (Google Auth Platform), choose **External** and fill in the required fields. Under **Audience**, either add your Google account as a test user or click **Publish app**.
-   > ⚠️ While the app is in *Testing* status, Google expires refresh tokens after **7 days**. For a migration that will run longer than a week, **publish** the app. An unverified app is fine for your own use; you'll just click through an "unverified app" warning once.
+3. Go to **APIs & Services → OAuth consent screen** (Google Auth Platform), choose **External** and fill in the required fields. Then, under **Audience**, either:
+   - **Testing (simplest):** click **+ Add users** and add the destination Google account as a test user. Google expires the sign-in after **7 days** in this mode. If a long migration hits that, it stops with a "sign-in has expired" message: run `dbx2gdrive auth google ...` again, then re-run `migrate`, and it resumes where it stopped.
+   - **Publish app:** no 7-day expiry. First complete the **Branding** page (app name, support email, developer contact). An unverified app is fine for your own use; you'll click through an "unverified app" warning once.
 4. Go to **Credentials → Create credentials → OAuth client ID**, choose application type **Desktop app**, then download the JSON file.
 
 ```bash
