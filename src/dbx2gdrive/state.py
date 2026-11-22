@@ -199,12 +199,16 @@ class State:
         return row["drive_id"] if row else None
 
     # -- updates --------------------------------------------------------------
+    def mark_started(self, path_lower: str) -> None:
+        """Recorded BEFORE a copy starts, so after a crash we know a Drive copy may already exist."""
+        self._write("UPDATE items SET attempts=attempts+1 WHERE path_lower=?", (path_lower,))
+
     def mark_done(self, path_lower: str, drive_id: str, rev: Optional[str]) -> None:
-        self._write("UPDATE items SET status='done', drive_id=?, done_rev=?, error=NULL, attempts=attempts+1 "
+        self._write("UPDATE items SET status='done', drive_id=?, done_rev=?, error=NULL "
                     "WHERE path_lower=?", (drive_id, rev, path_lower))
 
     def mark_error(self, path_lower: str, error: str, permanent: bool) -> None:
-        self._write("UPDATE items SET status=?, error=?, attempts=attempts+1 WHERE path_lower=?",
+        self._write("UPDATE items SET status=?, error=? WHERE path_lower=?",
                     ("skipped" if permanent else "failed", error[:2000], path_lower))
 
     def summary(self) -> dict:

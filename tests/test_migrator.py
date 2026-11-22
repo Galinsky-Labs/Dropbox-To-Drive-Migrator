@@ -126,3 +126,33 @@ def test_corrupt_dropbox_data_is_never_finalized():
     assert m.files_failed == 1
     assert "/notes.txt" not in dst.tree("ROOT")
     assert "hash mismatch" in state.problems()[0]["error"]
+
+
+def test_stop_right_after_google_finishes_does_not_duplicate():
+    """VM stopped in the instant between Google finalizing a file and us recording it."""
+    entries = account()
+    src, dst, state = FakeSource(entries), FakeDrive(), State(":memory:")
+    dst.fail_uploads = ["finish_then_crash"]
+    Migrator(src, dst, state, "ROOT", Options(workers=1, progress_interval=60)).run()
+    crashed = [r for r in state._all("SELECT path_lower, status, attempts FROM items WHERE kind='file'")
+               if r["status"] != "done"]
+    assert len(crashed) == 1 and crashed[0]["attempts"] == 1  # Drive has it; we never recorded it
+    run(src, dst, state)  # VM comes back
+    assert dst.tree("ROOT") == expected(entries)  # tree() asserts there are no duplicates
+
+
+def test_retry_after_lost_response_does_not_duplicate():
+    entries = account()
+    src, dst, state = FakeSource(entries), FakeDrive(), State(":memory:")
+    real = dst.upload
+    calls = {"n": 0}
+
+    def flaky(stream, parent_id, modified, rev=None, existing_id=None, adopt_existing=False):
+        calls["n"] += 1
+        fid = real(stream, parent_id, modified, rev, existing_id, adopt_existing)
+        if calls["n"] == 1:
+            raise ConnectionError("response lost after Google stored the file")
+        return fid
+    dst.upload = flaky
+    run(src, dst, state)
+    assert dst.tree("ROOT") == expected(entries)

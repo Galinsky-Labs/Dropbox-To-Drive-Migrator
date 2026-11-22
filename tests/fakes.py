@@ -53,8 +53,21 @@ class FakeDrive:
         return self._new(name=name, parent=parent_id, folder=True)
 
     def upload(self, stream, parent_id, modified, rev=None, existing_id=None, adopt_existing=False):
+        if existing_id is None and adopt_existing and rev:
+            for fid, it in self.items.items():
+                if it["parent"] == parent_id and it["name"] == stream.name and it.get("rev") == rev:
+                    return fid
         if self.fail_uploads:
-            raise self.fail_uploads.pop(0)
+            f = self.fail_uploads.pop(0)
+            if f == "finish_then_crash":  # Google stores the file, but we die before recording it
+                data = b""
+                while True:
+                    data += stream.read(4)
+                    if stream.at_eof():
+                        break
+                self._new(name=stream.name, parent=parent_id, folder=False, data=data, modified=modified, rev=rev)
+                raise SystemExit("VM stopped")
+            raise f
         data = b""
         while True:
             data += stream.read(4)
@@ -63,7 +76,7 @@ class FakeDrive:
         if existing_id:
             self.items[existing_id].update(data=data, modified=modified)
             return existing_id
-        return self._new(name=stream.name, parent=parent_id, folder=False, data=data, modified=modified)
+        return self._new(name=stream.name, parent=parent_id, folder=False, data=data, modified=modified, rev=rev)
 
     def write_text(self, name, parent_id, text, file_id=None):
         if file_id:

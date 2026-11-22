@@ -167,9 +167,12 @@ class Migrator:
                       row["content_hash"], row["client_modified"], bool(row["downloadable"]),
                       bool(row["exportable"]))
         existing_id = row["drive_id"]  # set when the file changed in Dropbox since the last copy
-        adopt = row["attempts"] > 0 and not existing_id
-
+        # If any earlier attempt started (this run or before a crash/stop), Google may already have
+        # the finished file even though we never recorded it: look for it before uploading again.
+        tries = {"adopt": row["attempts"] > 0 and not existing_id}
         def attempt():
+            self.state.mark_started(key)
+            adopt, tries["adopt"] = tries["adopt"], not existing_id
             with self.src.open(entry) as stream:  # streamed Dropbox -> Drive, never written to disk
                 drive_id = self.dst.upload(stream, parent_id, entry.client_modified, rev=entry.rev,
                                            existing_id=existing_id, adopt_existing=adopt)
