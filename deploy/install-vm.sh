@@ -74,6 +74,13 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=$APP/venv/bin/dbx2gdrive migrate --service --log-file $HOME_DIR/migration.log $MIGRATE_ARGS
 Restart=always
 RestartSec=60
+# Keep the machine responsive (SSH, status checks) while the migration runs flat out:
+# low CPU/IO priority, and a memory cap so only this service - never sshd - can run out.
+# If it hits the cap, systemd restarts it and the migration resumes where it left off.
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=60%
+MemoryMax=75%
 
 [Install]
 WantedBy=multi-user.target
