@@ -27,6 +27,17 @@ fi
 apt-get $APT_WAIT update -qq
 apt-get $APT_WAIT install -y -qq git python3 python3-venv >/dev/null
 
+# Small VMs (e.g. e2-micro, 1 GB) have no swap; a memory spike then freezes the whole machine,
+# including SSH. A modest swap file turns that into a slowdown instead.
+if ! swapon --show | grep -q . && [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 3000000 ]; then
+  echo "==> Adding a 1 GB swap file"
+  if [ ! -f /swapfile ]; then
+    { fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap -q /swapfile; } || echo "    (could not create swap; continuing)"
+  fi
+  swapon /swapfile 2>/dev/null || true
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 echo "==> Installing dbx2gdrive"
 if [ -d "$APP/src/.git" ]; then
   git -C "$APP/src" pull -q --ff-only
@@ -48,6 +59,10 @@ exec sudo -u dbx2gdrive DBX2GDRIVE_HOME=$HOME_DIR $APP/venv/bin/dbx2gdrive "\$@"
 WRAP
 chmod 755 /usr/local/bin/dbx2gdrive
 
+if { [ ! -f "$HOME_DIR/dropbox_token.json" ] || [ ! -f "$HOME_DIR/google_token.json" ]; } && ! ( : </dev/tty ) 2>/dev/null; then
+  echo "Sign-ins are missing and there is no terminal to ask for them. Run this script from an SSH window." >&2
+  exit 1
+fi
 if [ ! -f "$HOME_DIR/dropbox_token.json" ]; then
   echo
   echo "==> Step 1 of 2: connect Dropbox (read-only)"
@@ -93,7 +108,8 @@ cat <<DONE
 
 ==> The migration is running in the background. You can close this window.
 
-  Progress:        sudo dbx2gdrive status
+  Progress:        open "_Migration status.txt" in the destination folder in Google Drive
+                   (or here: sudo dbx2gdrive status)
   Problem files:   sudo dbx2gdrive status --problems
   Live log:        sudo journalctl -u dbx2gdrive -f
   Stop / start:    sudo systemctl stop dbx2gdrive / sudo systemctl start dbx2gdrive

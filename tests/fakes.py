@@ -65,12 +65,19 @@ class FakeDrive:
             return existing_id
         return self._new(name=stream.name, parent=parent_id, folder=False, data=data, modified=modified)
 
-    def tree(self, root):
+    def write_text(self, name, parent_id, text, file_id=None):
+        if file_id:
+            self.items[file_id]["data"] = text.encode()
+            return file_id
+        return self._new(name=name, parent=parent_id, folder=False, data=text.encode(), modified=None,
+                         status=True)
+
+    def tree(self, root, include_status=False):
         """Return {relative/path: data-or-None} for everything under root."""
         out = {}
         def walk(pid, prefix):
             for fid, it in self.items.items():
-                if it["parent"] == pid:
+                if it["parent"] == pid and (include_status or not it.get("status")):
                     p = f"{prefix}/{it['name']}"
                     if it["folder"]:
                         out[p] = None

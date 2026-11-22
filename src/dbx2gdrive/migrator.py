@@ -38,8 +38,9 @@ class Options:
 
 
 class Migrator:
-    def __init__(self, source, dest, state: State, dest_root_id: str, opts: Options):
+    def __init__(self, source, dest, state: State, dest_root_id: str, opts: Options, status=None):
         self.src, self.dst, self.state, self.opts = source, dest, state, opts
+        self.status = status  # optional StatusFile
         self.dest_root_id = dest_root_id
         self.root_lower = "" if opts.source_root in ("", "/") else opts.source_root.rstrip("/").lower()
         self._stop = threading.Event()
@@ -209,8 +210,15 @@ class Migrator:
                      self.files_done, total_files, human(self.bytes_done), human(total_bytes),
                      human(rate), self.files_failed, _duration(remaining))
 
+    def _phase(self, phase: str) -> None:
+        if self.status:
+            self.status.set_phase(phase)
+
     def run(self) -> None:
         if not self.opts.skip_scan:
+            self._phase("scanning")
             self.scan()
+        self._phase("folders")
         self.create_folders()
+        self._phase("copying")
         self.copy_files()

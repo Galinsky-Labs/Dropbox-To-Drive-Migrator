@@ -261,6 +261,19 @@ class DriveDest:
         _raise_for(r)
         return "error", f"HTTP {r.status_code}"
 
+    def write_text(self, name: str, parent_id: str, text: str, file_id: Optional[str] = None) -> str:
+        """Create or overwrite a small plain-text file (used for the status report)."""
+        from googleapiclient.http import MediaInMemoryUpload
+
+        media = MediaInMemoryUpload(text.encode("utf-8"), mimetype="text/plain", resumable=False)
+        files = self.svc.files()
+        if file_id:
+            req = files.update(fileId=file_id, media_body=media, fields="id", supportsAllDrives=True)
+        else:
+            req = files.create(body={"name": name, "parents": [parent_id], "mimeType": "text/plain"},
+                               media_body=media, fields="id", supportsAllDrives=True)
+        return self._exec(req)["id"]
+
     def _delete_quietly(self, file_id: str) -> None:
         try:
             self.svc.files().delete(fileId=file_id, supportsAllDrives=True).execute()

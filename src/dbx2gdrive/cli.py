@@ -51,8 +51,24 @@ def _state_path(args) -> str:
             or str(args.config_dir / "state.sqlite3"))
 
 
-def _idle(message: str, seconds: float = None) -> None:
+def _total_memory_gb() -> float:
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 1024 / 1024
+    except OSError:
+        pass
+    return 8.0  # not Linux: assume plenty
+
+
+_STATUS = None  # the StatusFile of the latest run, so waits/pauses show up in Drive too
+
+
+def _idle(message: str, seconds: float = None, phase: str = "paused") -> None:
     """Service mode: wait instead of exiting, so the host doesn't restart us in a loop."""
+    if _STATUS is not None:
+        _STATUS.set_phase(phase, message)
     deadline = time.monotonic() + seconds if seconds else None
     while deadline is None or time.monotonic() < deadline:
         log.info(message)
@@ -71,7 +87,8 @@ def cmd_migrate(args) -> int:
         except FatalError as exc:
             if exc.retry_in:
                 log.warning("%s Waiting, then resuming automatically.", exc)
-                _idle("Waiting for Google's limit to reset ...", exc.retry_in)
+                _idle("Paused: Google's daily upload limit (~750 GB/day) was reached. It resumes by itself "
+                      "within a few hours - nothing to do.", exc.retry_in, phase="waiting")
                 continue
             _idle(f"PAUSED: {exc} Fix this, then restart the service to continue.")
         except SystemExit as exc:  # e.g. missing/expired sign-in
@@ -84,11 +101,11 @@ def cmd_migrate(args) -> int:
             time.sleep(300)
             continue
         if rc == 0:
-            _idle("Migration complete. Nothing left to do - you can stop/delete this service now.")
+            _idle("Migration complete. Nothing left to do - you can stop/delete this service now.", phase="done")
         failed_rounds += 1
         if failed_rounds > 3:
             _idle("Migration finished, but some files could not be copied (see `dbx2gdrive status "
-                  "--problems`). You can stop this service.")
+                  "--problems`). You can stop this service.", phase="done")
         log.info("Some files failed; retrying them in 10 minutes (round %d of 3).", failed_rounds)
         time.sleep(600)
         args.skip_scan = True
@@ -138,24 +155,39 @@ def _migrate_once(args, service: bool = False) -> int:
     state.set_meta("dest_root_id", root_id)
     state.set_meta("source_root", args.source)
 
+    global _STATUS
+    from .status import StatusFile
+
+    status = StatusFile(dst, state, root_id, src.account_label(), dst.account_label())
+    _STATUS = status
+    status.start()
     opts = Options(source_root=args.source, workers=args.workers, retry_skipped=args.retry_skipped,
                    skip_scan=args.skip_scan)
-    migrator = Migrator(src, dst, state, root_id, opts)
+    migrator = Migrator(src, dst, state, root_id, opts, status=status)
     try:
         migrator.run()
     except FatalError as exc:
         log.error("Migration stopped: %s", exc)
         _print_summary(state)
         if service:
-            raise
+            raise  # the service loop records the wait/pause in the status file
+        status.set_phase("paused", f"Stopped: {exc}")
         return 2
     except KeyboardInterrupt:
         log.warning("Stopped by user. Run the same command again to resume.")
         _print_summary(state)
+        status.set_phase("paused", "Stopped by user. Run the migration again to resume.")
         return 130
+    finally:
+        status.stop()
     log.info("Run finished: %d files copied (%s), %d failed.",
              migrator.files_done, human(migrator.bytes_done), migrator.files_failed)
-    return _print_summary(state)
+    rc = _print_summary(state)
+    if rc == 0 or not service:
+        status.set_phase("done")
+    else:
+        status.set_phase("copying", "Retrying the failed files shortly.")
+    return rc
 
 
 def cmd_export(args) -> int:
@@ -245,7 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
     dest.add_argument("--dest-folder-name", default="Dropbox",
                       help="name of the folder to create in My Drive / the shared drive (default: Dropbox)")
     m.add_argument("--shared-drive-id", help="copy into this shared drive instead of My Drive")
-    m.add_argument("--workers", type=int, default=4, help="parallel transfers (default 4)")
+    m.add_argument("--workers", type=int, default=None,
+                   help="parallel transfers (default 4; 2 on machines with under 1.5 GB of memory)")
     m.add_argument("--state", help="state database: a file path or a postgres:// URL "
                    "(default: $DBX2GDRIVE_STATE, $DATABASE_URL, or <config-dir>/state.sqlite3)")
     m.add_argument("--service", action="store_true",
@@ -271,6 +304,8 @@ def main(argv=None) -> int:
     _setup_logging(args.verbose, getattr(args, "log_file", None))
     if args.command == "migrate":
         args.source = "" if args.source in ("", "/") else "/" + args.source.strip("/")
+        if args.workers is None:
+            args.workers = 2 if _total_memory_gb() < 1.5 else 4
         if args.workers < 1:
             raise SystemExit("--workers must be at least 1")
     return args.func(args) or 0

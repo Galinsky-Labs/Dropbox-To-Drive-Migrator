@@ -29,7 +29,7 @@ def test_migrate_then_status(wired, tmp_path, capsys):
     # Re-run reuses the same destination and copies nothing new.
     assert cli.main(base + ["migrate"]) == 0
     assert sum(1 for it in wired.items.values() if it["name"] == "Dropbox") == 1
-    assert len(wired.items) == 4
+    assert len([i for i in wired.items.values() if not i.get("status")]) == 4
     assert cli.main(base + ["status", "--problems"]) == 0
     assert "Migration complete." in capsys.readouterr().out
     # Switching destination with the same state file is refused.
@@ -89,7 +89,7 @@ def _service(monkeypatch, tmp_path, outcomes):
             raise o
         return o
 
-    def fake_idle(msg, seconds=None):
+    def fake_idle(msg, seconds=None, phase="paused"):
         idles.append((msg, seconds))
         if seconds is None:
             raise _Stop()
