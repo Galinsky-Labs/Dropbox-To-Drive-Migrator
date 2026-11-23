@@ -83,7 +83,7 @@ def test_transient_errors_are_retried_and_permanent_ones_skipped():
 def test_failures_beyond_retry_budget_are_retried_next_run():
     entries = account()
     src, dst, state = FakeSource(entries), FakeDrive(), State(":memory:")
-    src.fail["id:/notes.txt"] = [ConnectionError("x")] * 5
+    src.fail["id:/notes.txt"] = [IOError("Drive HTTP 500")] * 5
     run(src, dst, state)
     assert state.summary()[("file", "failed")][0] == 1
     run(src, dst, state)

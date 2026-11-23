@@ -104,6 +104,8 @@ class StatusFile:
         lines = [
             "DROPBOX -> GOOGLE DRIVE MIGRATION STATUS",
             f"Last updated: {now}   (refreshes every {int(self.interval // 60)} minutes while running)",
+            "If 'Last updated' is more than 30 minutes old and the status isn't COMPLETE, the server has",
+            "stopped or lost its internet connection.",
             "",
             f"STATUS: {headline}",
         ]

@@ -62,6 +62,7 @@ def _total_memory_gb() -> float:
     return 8.0  # not Linux: assume plenty
 
 
+_LAST_RUN_COPIED = 0  # files copied by the latest run (service mode keeps going while this is > 0)
 _STATUS = None  # the StatusFile of the latest run, so waits/pauses show up in Drive too
 
 
@@ -102,11 +103,13 @@ def cmd_migrate(args) -> int:
             continue
         if rc == 0:
             _idle("Migration complete. Nothing left to do - you can stop/delete this service now.", phase="done")
-        failed_rounds += 1
+        # Keep retrying failed files as long as rounds still make progress; give up only after
+        # several rounds in a row that copied nothing.
+        failed_rounds = 0 if _LAST_RUN_COPIED else failed_rounds + 1
         if failed_rounds > 3:
             _idle("Migration finished, but some files could not be copied (see `dbx2gdrive status "
                   "--problems`). You can stop this service.", phase="done")
-        log.info("Some files failed; retrying them in 10 minutes (round %d of 3).", failed_rounds)
+        log.info("Some files failed; retrying them in 10 minutes.")
         time.sleep(600)
         args.skip_scan = True
 
@@ -180,6 +183,8 @@ def _migrate_once(args, service: bool = False) -> int:
         return 130
     finally:
         status.stop()
+    global _LAST_RUN_COPIED
+    _LAST_RUN_COPIED = migrator.files_done
     log.info("Run finished: %d files copied (%s), %d failed.",
              migrator.files_done, human(migrator.bytes_done), migrator.files_failed)
     rc = _print_summary(state)
